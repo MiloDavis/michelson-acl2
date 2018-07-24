@@ -62,6 +62,15 @@
 (defdata symbolic-stack (listof mtype))
 (defdata stack (listof mdata))
 
+(defunc reified-stackp (sym stack)
+  :input-contract (and (symbolic-stackp sym) (stackp stack))
+  :output-contract (booleanp (reified-stackp sym stack))
+  (cond ((and (consp sym) (consp stack))
+         (and (reified-typep (car sym) (car stack))
+              (reified-stackp (cdr sym) (cdr stack))))
+        ((endp sym) (endp stack))
+        (t nil)))
+
 
 (defmacro declare-primops (primops instrs)
   (if (endp primops)
@@ -73,8 +82,14 @@
          (declare-primops ,(cdr primops) ,(cons prefixed instrs))))))
 
 (defdata typerror 'typerror)
-
 (defdata tc-result (oneof symbolic-stack typerror))
+
+(defdata failgas 'failgas)
+(defdata fail-no-message (cons 'fail string))
+(defdata fail-raw 'fail)
+(defdata fail (oneof fail-no-message fail-raw))
+
+(defdata interp-result (oneof stack fail failgas typerror))
 
 (defunc transform-sym-stack (checking-stack current-stack output-stack)
   :input-contract (and (symbolic-stackp checking-stack)
@@ -105,13 +120,79 @@
                                ,instr-expr
                                ,test-stack)))))
 
+(defconst *LIST-ACCESSORS*
+  '(FIRST SECOND THIRD FOURTH FIFTH SIXTH SEVENTH EIGHTH NINTH TENTH))
+(defconst *LIST-REMAINDERS*
+  '(CDR CDDR CDDDR CDDDDR CDDDDDR CDDDDDDR CDDDDDDR CDDDDDDDR CDDDDDDDR CDDDDDDDDR))
+
+(defdata unary-op-stack
+  (cons mdata stack))
+(defdata binary-op-stack
+  (cons mdata (cons mdata stack)))
+(defdata ternary-op-stack
+  (cons mdata (cons mdata (cons mdata stack))))
+(defdata quaternary-op-stack
+  (cons mdata (cons mdata (cons mdata (cons mdata stack)))))
+(defdata quernary-op-stack
+  (cons mdata (cons mdata (cons mdata (cons mdata (cons mdata stack))))))
+
+(defdata-subtype unary-op-stack stack)
+(defdata-subtype binary-op-stack unary-op-stack)
+(defdata-subtype ternary-op-stack binary-op-stack)
+(defdata-subtype quaternary-op-stack ternary-op-stack)
+(defdata-subtype quernary-op-stack quaternary-op-stack)
+
+(defconst *STACK-PREDS*
+  '(unary-op-stackp
+    binary-op-stackp
+    ternary-op-stackp
+    quaternary-op-stackp
+    quernary-op-stack))
+
+(defun list-accessors-help (elements accessors test-expr)
+  (if (endp elements)
+      nil
+    (cons `(,(car accessors) ,test-expr)
+          (list-accessors-help (cdr elements) (cdr accessors) test-expr))))
+
+(defun list-accessors (elements test-expr)
+  (list-accessors-help elements *LIST-ACCESSORS* test-expr))
+
+(defun gen-check-types (types accessors stack-expr)
+  (if (endp types)
+      't
+    `(and (,(cdr (assoc (car types) *PRED-LOOKUP*))
+           (,(car accessors) ,stack-expr))
+          ,(gen-check-types (cdr types) (cdr accessors) stack-expr))))
+
+(defmacro gen-interpreter-step (primops instr-expr stack)
+  (if (endp primops)
+      (quote 'typerror)
+    (let* ((instr-info (car primops))
+           (input-stack-types (car (second instr-info)))
+           (instr-pred (make-instr-pred (car instr-info)))
+           (function (third instr-info))
+           (accessor-ind (- (length input-stack-types) 1)))
+      `(if (and (,instr-pred ,instr-expr)
+                (,(nth accessor-ind *STACK-PREDS*) ,stack)
+                ,(gen-check-types input-stack-types *LIST-ACCESSORS* stack))
+           (cons (,function ,@(list-accessors input-stack-types stack))
+                 (,(nth accessor-ind *LIST-REMAINDERS*) ,stack))
+         (gen-interpreter-step ,(cdr primops)
+                               ,instr-expr
+                               ,stack)))))
+
 (defmacro primops (ops)
   `(progn
      (declare-primops ,ops nil)
      (defunc typechecker-step (instr stack)
        :input-contract (and (primopp instr) (symbolic-stackp stack))
        :output-contract (tc-resultp (typechecker-step instr stack))
-       (gen-typechecker-step ,ops instr stack))))
+       (gen-typechecker-step ,ops instr stack))
+     (defunc interpreter-step (instr stack)
+       :input-contract (and (primopp instr) (stackp stack))
+       :output-contract (interp-resultp (interpreter-step instr stack))
+       (gen-interpreter-step ,ops instr stack))))
 
 (defunc cmp-int (n1 n2)
   :input-contract (and (integerp n1) (integerp n2))
@@ -134,5 +215,14 @@
   (or ((bool bool) . (bool)) or)
 
   (cmp ((int int) . (int)) cmp-int)
-  (eq  ((int) . (bool)) cmpres-eq)
-  ))
+  (eq  ((int) . (bool)) cmpres-eq)))
+
+(defthm typechecker-step-progress
+  (implies (and (symbolic-stackp sym-stack)
+                (stackp stack)
+                (primopp op)
+                (reified-stackp sym-stack stack)
+                (not (typerrorp (typechecker-step op sym-stack))))
+           (and (reified-stackp (typechecker-step op sym-stack)
+                                (interpreter-step op stack))
+                (not (typerrorp (interpreter-step op stack))))))
