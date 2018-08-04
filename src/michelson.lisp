@@ -137,10 +137,6 @@
         ((endp sym) (endp stack))
         (t nil)))
 
-;; Quickly switch between test? and defthm
-(defmacro defthm? (name thm)
-  (declare (ignorable name))
-  `(test? ,thm))
 (defunc make-instr-pred (instr)
   :input-contract (symbolp instr)
   :output-contract (symbolp (make-instr-pred instr))
@@ -420,6 +416,17 @@
                (typecheck (cdr instrs) (cons first-stack stepped))
              'typerror)))
         (t 'typerror)))
+
+(in-theory (disable fail-rawp
+                    failgasp
+                    failp
+                    interp-failurep
+                    interp-resultp
+                    isuccess-definition-rule
+                    (:DEFINITION INTERPRETER-STEP-DEFINITION-RULE)
+                    (:DEFINITION OUT-OF-GASP-DEFINITION-RULE)
+                    (:DEFINITION SUCCESS-GAS-DEFINITION-RULE)
+                    (:DEFINITION SUCCESS-STACK-DEFINITION-RULE)))
 
 (defunc interp (instrs stack gas)
   :input-contract (and (instr-seqp instrs) (stackp stack) (gasp gas))
