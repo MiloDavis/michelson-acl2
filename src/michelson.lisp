@@ -24,6 +24,64 @@
                 (symbol-name s))
    s))
 
+(defunc make-predicate (s)
+  :input-contract (symbolp s)
+  :output-contract (symbolp (make-predicate s))
+  (intern-in-package-of-symbol
+   (concatenate 'acl2::string
+                (symbol-name s)
+                "P")
+   s))
+
+(defconst *LIST-ACCESSORS*
+  '(FIRST SECOND THIRD FOURTH FIFTH SIXTH SEVENTH EIGHTH NINTH TENTH))
+(defconst *LIST-REMAINDERS*
+  '(CDR CDDR CDDDR CDDDDR CDDDDDR CDDDDDDR CDDDDDDR CDDDDDDDR CDDDDDDDR CDDDDDDDDR))
+
+;; Quickly switch between test? and defthm
+(defmacro defthm? (name thm)
+  (declare (ignorable name))
+  `(test? ,thm))
+
+(defmacro stack-preds (ending data-name stack)
+  `(progn
+     (defdata ,(prefix-sym 'unary-op ending) (cons ,data-name ,stack))
+     (defdata ,(prefix-sym 'binary-op ending)
+       (cons ,data-name (cons ,data-name ,stack)))
+     (defdata ,(prefix-sym 'ternary-op ending)
+       (cons ,data-name (cons ,data-name (cons ,data-name ,stack))))
+     (defdata ,(prefix-sym 'quaternary-op ending)
+       (cons ,data-name
+             (cons ,data-name
+                   (cons ,data-name
+                         (cons ,data-name ,stack)))))
+     (defdata ,(prefix-sym 'quernary-op ending)
+       (cons ,data-name
+             (cons ,data-name
+                   (cons ,data-name
+                         (cons ,data-name
+                               (cons ,data-name ,stack))))))
+
+     (defdata-subtype ,(prefix-sym 'unary-op ending) ,stack)
+     (defdata-subtype ,(prefix-sym 'binary-op ending)
+       ,(prefix-sym 'unary-op ending))
+     (defdata-subtype ,(prefix-sym 'ternary-op ending)
+       ,(prefix-sym 'binary-op ending))
+     (defdata-subtype ,(prefix-sym 'quaternary-op ending)
+       ,(prefix-sym 'ternary-op ending))
+     (defdata-subtype ,(prefix-sym 'quernary-op ending)
+       ,(prefix-sym 'quaternary-op ending))
+     (defconst ,(intern-in-package-of-symbol
+                 (concatenate 'acl2::string
+                              "*"
+                              (symbol-name ending)
+                              "-PREDS*")
+                 ending)
+       '(,(make-predicate (prefix-sym 'unary-op ending))
+         ,(make-predicate (prefix-sym 'binary-op ending))
+         ,(make-predicate (prefix-sym 'ternary-op ending))
+         ,(make-predicate (prefix-sym 'quaternary-op ending))
+         ,(make-predicate (prefix-sym 'quernary-op ending))))))
 
 (defmacro gen-reified-typep (types type-expr value-expr)
   (if (endp types)
@@ -52,6 +110,10 @@
        :input-contract (mlist-typep lt)
        :output-contract (mtypep (mlist-type-type lt))
        (cdr lt))
+     (defdata symbolic-stack (listof mtype))
+     (defdata stack (listof mdata))
+     (stack-preds sym-stack mtype symbolic-stack)
+     (stack-preds stack mdata stack)
      (defunc reified-typep (type value)
        :input-contract (and (mtypep type) (mdatap value))
        :output-contract (booleanp (reified-typep type value))
@@ -65,9 +127,6 @@
  ((int integer integerp)
   (string string stringp)
   (bool boolean booleanp)))
-
-(defdata symbolic-stack (listof mtype))
-(defdata stack (listof mdata))
 
 (defunc reified-stackp (sym stack)
   :input-contract (and (symbolic-stackp sym) (stackp stack))
@@ -135,64 +194,6 @@
   :output-contract (gasp (success-gas success))
   (cdr success))
 
-(defunc transform-sym-stack (checking-stack current-stack output-stack)
-  :input-contract (and (symbolic-stackp checking-stack)
-                       (symbolic-stackp current-stack)
-                       (symbolic-stackp output-stack))
-  :output-contract (tc-resultp (transform-sym-stack checking-stack
-                                                    current-stack
-                                                    output-stack))
-  (cond ((endp checking-stack) (append output-stack current-stack))
-        ((and (consp current-stack)
-              (equal (car checking-stack) (car current-stack)))
-         (transform-sym-stack (cdr checking-stack)
-                              (cdr current-stack)
-                              output-stack))
-        (t 'typerror)))
-
-(defmacro gen-typechecker-step (primops instr-expr test-stack)
-  (if (endp primops)
-      (quote 'typerror)
-    (let* ((instr-info (car primops))
-           (stack-types (second instr-info))
-           (instr-pred (make-instr-pred (car instr-info))))
-      `(if (,instr-pred ,instr-expr)
-           (transform-sym-stack (quote ,(car stack-types))
-                                ,test-stack
-                                (quote ,(cdr stack-types)))
-         (gen-typechecker-step ,(cdr primops)
-                               ,instr-expr
-                               ,test-stack)))))
-
-(defconst *LIST-ACCESSORS*
-  '(FIRST SECOND THIRD FOURTH FIFTH SIXTH SEVENTH EIGHTH NINTH TENTH))
-(defconst *LIST-REMAINDERS*
-  '(CDR CDDR CDDDR CDDDDR CDDDDDR CDDDDDDR CDDDDDDR CDDDDDDDR CDDDDDDDR CDDDDDDDDR))
-
-(defdata unary-op-stack
-  (cons mdata stack))
-(defdata binary-op-stack
-  (cons mdata (cons mdata stack)))
-(defdata ternary-op-stack
-  (cons mdata (cons mdata (cons mdata stack))))
-(defdata quaternary-op-stack
-  (cons mdata (cons mdata (cons mdata (cons mdata stack)))))
-(defdata quernary-op-stack
-  (cons mdata (cons mdata (cons mdata (cons mdata (cons mdata stack))))))
-
-(defdata-subtype unary-op-stack stack)
-(defdata-subtype binary-op-stack unary-op-stack)
-(defdata-subtype ternary-op-stack binary-op-stack)
-(defdata-subtype quaternary-op-stack ternary-op-stack)
-(defdata-subtype quernary-op-stack quaternary-op-stack)
-
-(defconst *STACK-PREDS*
-  '(unary-op-stackp
-    binary-op-stackp
-    ternary-op-stackp
-    quaternary-op-stackp
-    quernary-op-stack))
-
 (defun list-accessors-help (elements accessors test-expr)
   (if (endp elements)
       nil
@@ -201,6 +202,41 @@
 
 (defun list-accessors (elements test-expr)
   (list-accessors-help elements *LIST-ACCESSORS* test-expr))
+
+(defun gen-check-symbolic-types (types accessors stack-expr)
+  (if (endp types)
+      't
+    `(and (equal (quote ,(car types))
+                 (,(car accessors) ,stack-expr))
+          ,(gen-check-symbolic-types (cdr types) (cdr accessors) stack-expr))))
+
+(gen-check-symbolic-types '(int bool string) *LIST-ACCESSORS* 'test)
+
+(defun static-append (l tail)
+  (if (endp l)
+      tail
+    `(cons (quote ,(car l)) ,(static-append (cdr l) tail))))
+
+(defmacro gen-typechecker-step (primops instr-expr test-stack)
+  (if (endp primops)
+      (quote 'typerror)
+    (let* ((instr-info (car primops))
+           (stack-types (second instr-info))
+           (instr-pred (make-instr-pred (car instr-info)))
+           (rest-accessor-index (1- (len (car stack-types)))))
+      `(if (,instr-pred ,instr-expr)
+           (if (and (,(nth rest-accessor-index *SYM-STACK-PREDS*)
+                     ,test-stack)
+                    ,(gen-check-symbolic-types (car stack-types)
+                                               *LIST-ACCESSORS*
+                                               test-stack))
+               (list* ,@(quote* (cdr stack-types))
+                      (,(nth rest-accessor-index *LIST-REMAINDERS*)
+                       ,test-stack))
+             'typerror)
+         (gen-typechecker-step ,(cdr primops)
+                               ,instr-expr
+                               ,test-stack)))))
 
 (defun gen-check-types (types accessors stack-expr)
   (if (endp types)
@@ -311,7 +347,9 @@
              (or (failgasp stepped)
                  (and (not (typerrorp stepped))
                       (reified-stackp (typechecker-step op sym-stack)
-                                      (success-stack stepped)))))))
+                                      (success-stack stepped))))))
+  :rule-classes (:rewrite :forward-chaining))
+
 (defthm step-decreases-gas
   (implies (and (stackp stack)
                 (primopp op)
