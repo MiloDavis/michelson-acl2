@@ -1,5 +1,5 @@
 (include-book "acl2s/defunc" :dir :system)
-(include-book "acl2s/ccg/ccg" :ttags ((:ccg)) :dir :system :load-compiled-file nil)
+(include-book "acl2s/ccg/ccg" :ttags ((:ccg)) :dir :system)
 (ld "acl2s/ccg/ccg-settings.lsp" :dir :system)
 
 (in-package "ACL2S")
@@ -39,8 +39,8 @@
   '(CDR CDDR CDDDR CDDDDR CDDDDDR CDDDDDDR CDDDDDDR CDDDDDDDR CDDDDDDDR CDDDDDDDDR))
 
 ;; Quickly switch between test? and defthm
-(defmacro defthm? (name thm)
-  (declare (ignorable name))
+(defmacro defthm? (name thm &rest rest)
+  (declare (ignorable name rest))
   `(test? ,thm))
 
 (defmacro stack-preds (ending data-name stack)
@@ -128,6 +128,7 @@
   (string string stringp)
   (bool boolean booleanp)))
 
+
 (defunc reified-stackp (sym stack)
   :input-contract (and (symbolic-stackp sym) (stackp stack))
   :output-contract (booleanp (reified-stackp sym stack))
@@ -205,13 +206,6 @@
     `(and (equal (quote ,(car types))
                  (,(car accessors) ,stack-expr))
           ,(gen-check-symbolic-types (cdr types) (cdr accessors) stack-expr))))
-
-(gen-check-symbolic-types '(int bool string) *LIST-ACCESSORS* 'test)
-
-(defun static-append (l tail)
-  (if (endp l)
-      tail
-    `(cons (quote ,(car l)) ,(static-append (cdr l) tail))))
 
 (defmacro gen-typechecker-step (primops instr-expr test-stack)
   (if (endp primops)
@@ -332,6 +326,28 @@
   (cmp ((int int) . (int)) cmp-int preliminary-gas-binop)
   (eq  ((int) . (bool)) cmpres-eq preliminary-gas-unop)))
 
+(defthm stack-reified-selectors
+  (implies (and (symbolic-stackp sym-stack)
+                (stackp stack)
+                (reified-stackp sym-stack stack))
+           (and (iff (unary-op-sym-stackp sym-stack)
+                     (unary-op-stackp stack))
+                (iff (binary-op-sym-stackp sym-stack)
+                     (binary-op-stackp stack))
+                (iff (ternary-op-sym-stackp sym-stack)
+                     (ternary-op-stackp stack))
+                (iff (quaternary-op-sym-stackp sym-stack)
+                     (quaternary-op-stackp stack))
+                (iff (quernary-op-sym-stackp sym-stack)
+                     (quernary-op-stackp stack))
+                ))
+  :hints (("Goal" :in-theory (disable (:DEFINITION MBASE-TYPEP)
+                                      (:DEFINITION MDATAP)
+                                      (:DEFINITION MLIST-DATAP)
+                                      (:DEFINITION MTYPEP)
+                                      (:DEFINITION MLIST-TYPEP)
+                                      ))))
+
 (defthm typechecker-step-progress
   (implies (and (symbolic-stackp sym-stack)
                 (stackp stack)
@@ -343,8 +359,34 @@
              (or (failgasp stepped)
                  (and (not (typerrorp stepped))
                       (reified-stackp (typechecker-step op sym-stack)
-                                      (success-stack stepped))))))
-  :rule-classes (:rewrite :forward-chaining))
+                                      (success-stack stepped)))))))
+
+(defmacro with-disable (disabled-list &rest exprs)
+  `(progn
+    (in-theory (disable ,@disabled-list))
+    ,@exprs
+    (in-theory (enable ,@disabled-list))))
+
+(with-disable
+ ((:DEFINITION CMP-INT-DEFINITION-RULE)
+  primopp
+  gasp
+  (:DEFINITION MDATAP)
+  (:DEFINITION MTYPEP)
+  (:DEFINITION MLIST-TYPEP)
+  (:DEFINITION OUT-OF-GASP-DEFINITION-RULE)
+  (:DEFINITION FIX)
+  )
+
+ (defthm typechecker-step-typerror
+   (implies (and (symbolic-stackp sym-stack)
+                 (stackp stack)
+                 (primopp op)
+                 (reified-stackp sym-stack stack)
+                 (gasp gas)
+                 (not (failgasp (interpreter-step op stack gas))))
+            (iff (typerrorp (typechecker-step op sym-stack))
+                 (typerrorp (interpreter-step op stack gas))))))
 
 (defthm step-decreases-gas
   (implies (and (stackp stack)
@@ -377,87 +419,119 @@
   :output-contract (instr-seqp (instr-dip-instrs instr))
   (cdr instr))
 
-(in-theory (disable stackp
-                    gasp
-                    instr-seqp
-                    instr-dipp
-                    instr-ifp
-                    primopp
-                    tc-resultp
-                    typerrorp
-                    out-of-gasp
-                    symbolic-stackp
-                    ))
+(with-disable
+ (
+  stackp
+  gasp
+  instr-seqp
+  instr-dipp
+  instr-ifp
+  instr-if=>def
+  instr-dip=>def
+  primopp
+  tc-resultp
+  typerrorp
+  out-of-gasp
+  symbolic-stackp
+  )
 
-(defunc typecheck (instrs stack)
-  :input-contract (and (instr-seqp instrs) (symbolic-stackp stack))
-  :output-contract (tc-resultp (typecheck instrs stack))
-  (cond ((endp instrs) stack)
-        ((primopp (car instrs))
-         (let ((stepped (typechecker-step (car instrs) stack)))
-           (if (typerrorp stepped)
-               stepped
-             (typecheck (cdr instrs) stepped))))
-        ((and (instr-ifp (car instrs)) (consp stack) (equal 'bool (car instrs)))
-         (let* ((instr (car instrs))
-                (branch-stack (cdr stack))
-                (conseq-stepped (typecheck (instr-if-conseq instr) branch-stack))
-                (alt-stepped (typecheck (instr-if-alt instr) branch-stack)))
-           (if (and (symbolic-stackp conseq-stepped)
-                    (symbolic-stackp alt-stepped)
-                    (equal conseq-stepped alt-stepped))
-               (typecheck (cdr instrs) conseq-stepped)
-             'typerror)))
-        ((and (instr-dipp (car instrs)) (consp stack))
-         (let* ((first-stack (car stack))
-                (rest-stack (cdr stack))
-                (stepped (typecheck (instr-dip-instrs (car instrs)) rest-stack)))
-           (if (symbolic-stackp stepped)
-               (typecheck (cdr instrs) (cons first-stack stepped))
-             'typerror)))
-        (t 'typerror)))
+ (defunc typecheck (instrs stack)
+   :input-contract (and (instr-seqp instrs) (symbolic-stackp stack))
+   :output-contract (tc-resultp (typecheck instrs stack))
+   (cond ((endp instrs) stack)
+         ((primopp (car instrs))
+          (let ((stepped (typechecker-step (car instrs) stack)))
+            (if (typerrorp stepped)
+                stepped
+              (typecheck (cdr instrs) stepped))))
+         ;; ((and (instr-ifp (car instrs))
+         ;;       (unary-op-sym-stackp stack)
+         ;;       (equal 'bool (car stack)))
+         ;;  (let* ((instr (car instrs))
+         ;;         (branch-stack (cdr stack))
+         ;;         (conseq-stepped (typecheck (instr-if-conseq instr) branch-stack))
+         ;;         (alt-stepped (typecheck (instr-if-alt instr) branch-stack)))
+         ;;    (if (and (symbolic-stackp conseq-stepped)
+         ;;             (symbolic-stackp alt-stepped)
+         ;;             (equal conseq-stepped alt-stepped))
+         ;;        (typecheck (cdr instrs) conseq-stepped)
+         ;;      'typerror)))
+         ;; ((and (instr-dipp (car instrs)) (consp stack))
+         ;;  (let* ((first-stack (car stack))
+         ;;         (rest-stack (cdr stack))
+         ;;         (stepped (typecheck (instr-dip-instrs (car instrs)) rest-stack)))
+         ;;    (if (symbolic-stackp stepped)
+         ;;        (typecheck (cdr instrs) (cons first-stack stepped))
+         ;;      'typerror)))
+         (t 'typerror))))
 
-(in-theory (disable fail-rawp
-                    failgasp
-                    failp
-                    interp-failurep
-                    interp-resultp
-                    isuccess-definition-rule
-                    (:DEFINITION INTERPRETER-STEP-DEFINITION-RULE)
-                    (:DEFINITION OUT-OF-GASP-DEFINITION-RULE)
-                    (:DEFINITION SUCCESS-GAS-DEFINITION-RULE)
-                    (:DEFINITION SUCCESS-STACK-DEFINITION-RULE)))
 
-(defunc interp (instrs stack gas)
-  :input-contract (and (instr-seqp instrs) (stackp stack) (gasp gas))
-  :output-contract (interp-resultp (interp instrs stack gas))
-  (cond ((out-of-gasp gas) 'failgas)
-        ((endp instrs) (isuccess stack gas))
-        ((primopp (car instrs))
-         (let ((stepped (interpreter-step (car instrs) stack gas)))
-           (if (interp-successp stepped)
-               (interp (cdr instrs) (success-stack stepped) (success-gas stepped))
-             stepped)))
-        ((and (instr-ifp (car instrs))
-              (consp stack)
-              (booleanp (car instrs)))
-         (let* ((instr (car instrs))
-                (branch-stack (cdr stack))
-                (stepped (interp (if (car stack)
-                                     (instr-if-conseq instr)
-                                     (instr-if-alt instr))
-                                 branch-stack
-                                 gas)))
-           (if (interp-successp stepped)
-               (interp (cdr instrs) (success-stack stepped) (success-gas stepped))
-             stepped)))
-        ((and (instr-dipp (car instrs)) (consp stack))
-         (let* ((first-stack (car stack))
-                (rest-stack (cdr stack))
-                (stepped (interp (instr-dip-instrs (car instrs)) rest-stack gas)))
-           (if (interp-successp stepped)
-               (interp (cdr instrs)
-                       (cons first-stack (success-stack stepped))
-                       (success-gas stepped))
-             stepped)))
-        (t 'typerror)))
+(with-disable
+ (fail-rawp
+  failgasp
+  failp
+  interp-failurep
+  interp-resultp
+  stackp
+  gasp
+  instr-seqp
+  instr-dipp
+  instr-ifp
+  instr-if=>def
+  instr-dip=>def
+  primopp
+  tc-resultp
+  typerrorp
+  out-of-gasp
+  symbolic-stackp
+  (:DEFINITION INTERPRETER-STEP-DEFINITION-RULE)
+  (:DEFINITION SUCCESS-GAS-DEFINITION-RULE)
+  (:DEFINITION SUCCESS-STACK-DEFINITION-RULE))
+
+ (defunc interp (instrs stack gas)
+   :input-contract (and (instr-seqp instrs) (stackp stack) (gasp gas))
+   :output-contract (interp-resultp (interp instrs stack gas))
+   (cond ((out-of-gasp gas) 'failgas)
+         ((endp instrs) (isuccess stack gas))
+         ((primopp (car instrs))
+          (let ((stepped (interpreter-step (car instrs) stack gas)))
+            (if (interp-successp stepped)
+                (interp (cdr instrs) (success-stack stepped) (success-gas stepped))
+              stepped)))
+         ;; ((and (instr-ifp (car instrs))
+         ;;       (unary-op-stackp stack)
+         ;;       (booleanp (car stack)))
+         ;;  (let* ((instr (car instrs))
+         ;;         (branch-stack (cdr stack))
+         ;;         (stepped (interp (if (car stack)
+         ;;                              (instr-if-conseq instr)
+         ;;                              (instr-if-alt instr))
+         ;;                          branch-stack
+         ;;                          gas)))
+         ;;    (if (interp-successp stepped)
+         ;;        (interp (cdr instrs) (success-stack stepped) (success-gas stepped))
+         ;;      stepped)))
+         ;; ((and (instr-dipp (car instrs)) (consp stack))
+         ;;  (let* ((first-stack (car stack))
+         ;;         (rest-stack (cdr stack))
+         ;;         (stepped (interp (instr-dip-instrs (car instrs)) rest-stack gas)))
+         ;;    (if (interp-successp stepped)
+         ;;        (interp (cdr instrs)
+         ;;                (cons first-stack (success-stack stepped))
+         ;;                (success-gas stepped))
+         ;;      stepped)))
+         (t 'typerror))))
+
+(defthm typecheck-interp-progress
+  (implies (and (symbolic-stackp sym-stack)
+                (stackp stack)
+                (instr-seqp ops)
+                (reified-stackp sym-stack stack)
+                (gasp gas)
+                (not (typerrorp (typecheck ops sym-stack))))
+           (let ((result (interp ops stack gas)))
+             (and (not (typerrorp result))
+                  (or (failgasp result)
+                      (failp result)
+                      (reified-stackp (typecheck ops sym-stack)
+                                      (success-stack result)))))))
